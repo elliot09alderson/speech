@@ -1,13 +1,45 @@
 import React, { useState, useEffect, useRef } from "react";
 
 const App = () => {
+  const [devices, setDevices] = useState([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState(null);
   const [transcript, setTranscript] = useState("");
   const [isListening, setIsListening] = useState(false);
+  const [inputLevel, setInputLevel] = useState(0);
   const [error, setError] = useState(null);
-  const [isMicMuted, setIsMicMuted] = useState(false);
-  const [inputLevel, setInputLevel] = useState(0); // For debugging audio input levels
   const recognitionRef = useRef(null);
+  const micStreamRef = useRef(null);
 
+  // Fetch active and connected microphones
+  useEffect(() => {
+    const fetchActiveDevices = async () => {
+      try {
+        const deviceList = await navigator.mediaDevices.enumerateDevices();
+        const activeDevices = deviceList.filter(
+          (device) => device.kind === "audioinput" && device.label
+        ); // Filter out devices without labels (inactive)
+
+        setDevices(activeDevices);
+
+        if (activeDevices.length > 0) {
+          setSelectedDeviceId(activeDevices[0].deviceId); // Default to the first active device
+        } else {
+          setError("No active microphones found.");
+        }
+      } catch (err) {
+        setError("Unable to fetch devices: " + err.message);
+      }
+    };
+
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then(fetchActiveDevices)
+      .catch((err) => {
+        setError("Microphone access is required to list devices.");
+      });
+  }, []);
+
+  // Initialize speech recognition
   useEffect(() => {
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -20,10 +52,8 @@ const App = () => {
     const recognition = new SpeechRecognition();
     recognitionRef.current = recognition;
 
-    // Configure for Indian English
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
     recognition.lang = "en-IN";
 
     recognition.onresult = (event) => {
@@ -33,50 +63,37 @@ const App = () => {
     };
 
     recognition.onerror = (event) => {
-      setError(`Error asdsads: ${event.error}`);
-      if (event.error === "no-speech") {
-        checkMicMuted();
-      }
+      setError(`Recognition Error: ${event.error}`);
       setIsListening(false);
     };
 
     recognition.onstart = () => {
       setIsListening(true);
       setError(null);
-      monitorMicInput(); // Start monitoring audio input
     };
 
     recognition.onend = () => {
       setIsListening(false);
-      stopMicInputMonitoring(); // Stop monitoring audio input
     };
 
     return () => {
       recognition.stop();
-      stopMicInputMonitoring();
     };
   }, []);
 
-  const checkMicMuted = async () => {
+  // Monitor microphone input level
+  const monitorMicInput = async (deviceId) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const audioTracks = stream.getAudioTracks();
-      const isMuted = audioTracks.every(
-        (track) => track.muted || track.readyState === "ended"
-      );
-      setIsMicMuted(isMuted);
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
 
-      // Stop the stream to release the microphone
-      audioTracks.forEach((track) => track.stop());
-    } catch (err) {
-      setError("Unable to access the microphone");
-      setIsMicMuted(true);
-    }
-  };
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: deviceId },
+      });
 
-  const monitorMicInput = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+
       const audioContext = new (window.AudioContext ||
         window.webkitAudioContext)();
       const source = audioContext.createMediaStreamSource(stream);
@@ -100,20 +117,18 @@ const App = () => {
 
       checkAudioLevel();
     } catch (err) {
-      setError("Unable to monitor audio input");
+      setError("Unable to monitor mic input: " + err.message);
     }
   };
 
-  const stopMicInputMonitoring = () => {
-    setInputLevel(0);
-  };
-
+  // Start listening with the selected mic
   const startListening = () => {
-    if (recognitionRef.current) {
+    if (recognitionRef.current && selectedDeviceId) {
       try {
         recognitionRef.current.start();
+        monitorMicInput(selectedDeviceId);
       } catch (err) {
-        setError(`Start error: ${err.message}`);
+        setError(`Start Error: ${err.message}`);
       }
     }
   };
@@ -122,62 +137,85 @@ const App = () => {
     if (recognitionRef.current) {
       recognitionRef.current.stop();
     }
+    setInputLevel(0);
   };
 
   const resetTranscript = () => {
     setTranscript("");
     setError(null);
-    setIsMicMuted(false);
-    setInputLevel(0);
+  };
+
+  const handleDeviceChange = (event) => {
+    const newDeviceId = event.target.value;
+    setSelectedDeviceId(newDeviceId);
+    if (isListening) {
+      monitorMicInput(newDeviceId);
+    }
   };
 
   return (
     <div>
-      <h1>Speech Recognition (Indian English)</h1>
+      <h1>Speech Recognition with Active Mic Selector</h1>
 
+      {/* Device Selector */}
       <div>
-        <button onClick={startListening} disabled={isListening || isMicMuted}>
+        <label htmlFor="mic-select">Select Microphone:</label>
+        <select
+          id="mic-select"
+          onChange={handleDeviceChange}
+          value={selectedDeviceId || ""}
+        >
+          {devices.length > 0 ? (
+            devices.map((device) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {device.label}
+              </option>
+            ))
+          ) : (
+            <option>No active microphones available</option>
+          )}
+        </select>
+      </div>
+
+      {/* Controls */}
+      <div>
+        <button
+          onClick={startListening}
+          disabled={isListening || !devices.length}
+        >
           Start Listening
         </button>
-
         <button onClick={stopListening} disabled={!isListening}>
           Stop Listening
         </button>
-
         <button onClick={resetTranscript}>Reset</button>
       </div>
 
-      {error && <div style={{ color: "red", marginTop: "10px" }}>{error}</div>}
+      {/* Error Display */}
+      {error && <div style={{ color: "red" }}>{error}</div>}
 
-      {isMicMuted && (
-        <div style={{ color: "red", marginTop: "10px" }}>
-          Microphone is muted or not working. Please check your mic settings.
-        </div>
-      )}
-
+      {/* Transcript */}
       <div>
         <h2>Transcript:</h2>
         <p>{transcript || "No transcript yet..."}</p>
       </div>
 
+      {/* Input Level Meter */}
       <div>
-        <p>Status: {isListening ? "Listening" : "Not Listening"}</p>
-        <p>
-          Mic Input Level:{" "}
-          {inputLevel > 0 ? inputLevel.toFixed(2) : "No input detected"}
-        </p>
+        <p>Audio Input Level: {Math.round(inputLevel)}%</p>
+        <div
+          style={{
+            height: "10px",
+            width: `${Math.min(inputLevel, 100)}%`,
+            background: "green",
+            marginTop: "10px",
+          }}
+        />
       </div>
 
-      <div
-        style={{ marginTop: "20px", border: "1px solid #ccc", padding: "10px" }}
-      >
-        <h3>Tips for Indian English Speech Recognition:</h3>
-        <ul>
-          <li>Speak clearly and at a moderate pace</li>
-          <li>Minimize background noise</li>
-          <li>Use standard Indian English pronunciation</li>
-          <li>Ensure good microphone input</li>
-        </ul>
+      {/* Status */}
+      <div>
+        <p>Status: {isListening ? "Listening" : "Not Listening"}</p>
       </div>
     </div>
   );
